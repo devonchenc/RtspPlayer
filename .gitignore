@@ -66,3 +66,32 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Visual Studio IDE
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+
+# Visual Studio temporary files
+*.tmp_proj
+*.tmp
+*.cache
+*.opendb
+*.opensdf
+*.sdf
+*.VC.db-shm
+*.VC.db-wal
+
+# Build output directories
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+[xX]64/
+[xX]86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
