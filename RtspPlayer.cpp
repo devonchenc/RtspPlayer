@@ -592,6 +592,8 @@ bool RtspPlayer::ReceiveVideoFrames()
         output.frame = std::move(frame);
         output.pts = pts;
 
+        ++m_decodedFrameCount;
+
         if (!m_videoFrameQueue.PushDropOldest(std::move(output)))
             return false;
 
@@ -908,6 +910,11 @@ void RtspPlayer::ScheduleVideoFrame()
             m_videoClockStarted = true;
         }
 
+        std::cout << "Video PTS: " << m_pendingVideoFrame->pts
+                  << ", Master Clock: " << GetMasterClock()
+                  << ", Difference: " << m_pendingVideoFrame->pts - GetMasterClock()
+                  << ", Queue Size: " << m_videoFrameQueue.Size() << '\n';
+
         const double difference = m_pendingVideoFrame->pts - GetMasterClock();
 
         if (difference > kEarlyFrameThresholdSeconds)
@@ -921,6 +928,8 @@ void RtspPlayer::ScheduleVideoFrame()
         }
 
         RenderVideoFrame(m_pendingVideoFrame->frame.get());
+
+        ++m_renderedFrameCount;
 
         m_pendingVideoFrame.reset();
     }
@@ -953,8 +962,8 @@ void RtspPlayer::RenderVideoFrame(AVFrame* frame)
     const int width = frame->width;
     const int height = frame->height;
 
-    SwsContext* cached = sws_getCachedContext(m_swsContext.release(), width, height, static_cast<AVPixelFormat>(frame->format), width, height,
-        AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
+    SwsContext* cached = sws_getCachedContext(m_swsContext.release(), width, height, static_cast<AVPixelFormat>(frame->format),
+        width, height, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
     m_swsContext.reset(cached);
 
     if (!m_swsContext)
@@ -1045,6 +1054,8 @@ void RtspPlayer::Play()
     {
         ScheduleVideoFrame();
 
+        PrintStatistics();
+
         const bool videoFinished = m_videoDone.load() && m_videoFrameQueue.Empty() && !m_pendingVideoFrame;
 
         const bool audioDecodeFinished = m_audioDone.load() && m_audioBufferQueue.Empty();
@@ -1085,4 +1096,36 @@ void RtspPlayer::Play()
     }
 
     StopThreads();
+}
+
+void RtspPlayer::PrintStatistics()
+{
+    const auto now = std::chrono::steady_clock::now();
+
+    if (m_lastStatsTime.time_since_epoch().count() == 0)
+    {
+        m_lastStatsTime = now;
+        return;
+    }
+
+    const double elapsed = std::chrono::duration<double>(now - m_lastStatsTime).count();
+
+    if (elapsed < 1.0)
+        return;
+
+    const auto decoded = m_decodedFrameCount.load();
+    const auto rendered = m_renderedFrameCount.load();
+    const double decodedFps = (decoded - m_lastDecodedFrameCount) / elapsed;
+    const double renderedFps = (rendered - m_lastRenderedFrameCount) / elapsed;
+
+    std::cout
+        << "\n========== Player Statistics ==========\n"
+        << "Decoded FPS:  " << decodedFps << '\n'
+        << "Rendered FPS: " << renderedFps << '\n'
+        << "Queue Size:   " << m_videoFrameQueue.Size() << '\n'
+        << "=======================================\n";
+
+    m_lastDecodedFrameCount = decoded;
+    m_lastRenderedFrameCount = rendered;
+    m_lastStatsTime = now;
 }

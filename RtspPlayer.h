@@ -172,6 +172,7 @@ private:
 
     static int InterruptCallback(void* opaque);
     static void LogFFmpegError(const char* operation, int error);
+    void PrintStatistics();
 
 private:
     // FFmpeg objects
@@ -197,7 +198,7 @@ private:
     bool m_sdlInitialized{ false };
 
     Uint32 m_dataReadyEvent{ 0 };
-    std::atomic_bool m_dataReadyEventPending{ false };
+    std::atomic<bool> m_dataReadyEventPending{ false };
 
     // Queues
     BlockingQueue<PacketPtr> m_videoPacketQueue{ 128 };
@@ -210,9 +211,9 @@ private:
     std::jthread m_videoDecodeThread;
     std::jthread m_audioDecodeThread;
 
-    std::atomic_bool m_stopping{ false };
-    std::atomic_bool m_videoDone{ false };
-    std::atomic_bool m_audioDone{ false };
+    std::atomic<bool> m_stopping{ false };
+    std::atomic<bool> m_videoDone{ false };
+    std::atomic<bool> m_audioDone{ false };
 
     // Video decoder thread only
     double m_videoNextPts{ 0.0 };
@@ -232,4 +233,11 @@ private:
     bool m_audioClockStarted{ false };
     double m_audioClockBasePts{ 0.0 };
     std::int64_t m_audioSamplesSubmitted{ 0 };
+
+    // FPS stats
+    std::chrono::steady_clock::time_point m_lastStatsTime{};
+    std::atomic<uint64_t> m_decodedFrameCount{ 0 };
+    std::atomic<uint64_t> m_renderedFrameCount{ 0 };
+    std::uint64_t m_lastDecodedFrameCount{ 0 };
+    std::uint64_t m_lastRenderedFrameCount{ 0 };
 };
