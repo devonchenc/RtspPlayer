@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="RtspPlayer.vcxproj" Id="8c72929e-0786-4e90-8071-8c74306336b0" />
+</Solution>
