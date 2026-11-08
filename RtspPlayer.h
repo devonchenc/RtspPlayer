@@ -24,6 +24,11 @@ extern "C"
 #include <thread>
 #include <vector>
 
+struct PlayerConfig
+{
+    std::chrono::milliseconds videoBufferDurationMs{ 1000 };
+};
+
 class RtspPlayer
 {
 public:
@@ -148,11 +153,11 @@ private:
     void VideoDecodeThread(std::stop_token stopToken);
     void AudioDecodeThread(std::stop_token stopToken);
 
-    bool DecodeVideoPacket(AVPacket* packet);
+    bool DecodeVideoPacket(AVPacket* packet, std::stop_token stopToken);
     bool DecodeAudioPacket(AVPacket* packet);
-    bool ReceiveVideoFrames();
+    bool ReceiveVideoFrames(std::stop_token stopToken);
     bool ReceiveAudioFrames();
-    bool FlushVideoDecoder();
+    bool FlushVideoDecoder(std::stop_token stopToken);
     bool FlushAudioDecoder();
 
     bool ConvertAudioFrame(AVFrame* frame);
@@ -172,6 +177,7 @@ private:
 
     static int InterruptCallback(void* opaque);
     static void LogFFmpegError(const char* operation, int error);
+    size_t GetMaxVideoFrameQueueSize() const;
     void PrintStatistics();
 
 private:
@@ -203,7 +209,7 @@ private:
     // Queues
     BlockingQueue<PacketPtr> m_videoPacketQueue{ 128 };
     BlockingQueue<PacketPtr> m_audioPacketQueue{ 128 };
-    BlockingQueue<VideoFrame> m_videoFrameQueue{ 60 };
+    BlockingQueue<VideoFrame> m_videoFrameQueue{ 30 };
     BlockingQueue<AudioBuffer> m_audioBufferQueue{ 32 };
 
     // Worker threads
@@ -240,4 +246,6 @@ private:
     std::atomic<uint64_t> m_renderedFrameCount{ 0 };
     std::uint64_t m_lastDecodedFrameCount{ 0 };
     std::uint64_t m_lastRenderedFrameCount{ 0 };
+
+    PlayerConfig m_config;
 };

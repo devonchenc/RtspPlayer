@@ -19,31 +19,12 @@ public:
 
     bool Push(T item)
     {
-        std::unique_lock lock(m_mutex);
-        m_notFull.wait(lock, [this] { return m_closed || m_queue.size() < m_capacity; });
-
-        if (m_closed)
-            return false;
-
-        m_queue.push_back(std::move(item));
-        lock.unlock();
-        m_notEmpty.notify_one();
-        return true;
-    }
-
-    // Suitable for real-time video frames, not compressed packets or audio.
-    bool PushDropOldest(T item)
-    {
         {
-            std::lock_guard lock(m_mutex);
+            std::unique_lock lock(m_mutex);
+            m_notFull.wait(lock, [this] { return m_closed || m_queue.size() < m_capacity; });
+
             if (m_closed)
                 return false;
-
-            if (m_queue.size() >= m_capacity)
-            {
-                std::cout << "[VideoQueue] Dropped oldest frame\n";
-                m_queue.pop_front();
-            }
 
             m_queue.push_back(std::move(item));
         }
@@ -52,18 +33,60 @@ public:
         return true;
     }
 
+    bool PushWait(T item, std::stop_token stopToken)
+    {
+        {
+            std::unique_lock lock(m_mutex);
+
+            const bool ready = m_notFull.wait(lock, stopToken, [this] { return m_closed || m_queue.size() < m_capacity; });
+
+            if (!ready || m_closed)
+                return false;
+
+            m_queue.push_back(std::move(item));
+        }
+
+        m_notEmpty.notify_one();
+
+        return true;
+    }
+
+    bool PushDropOldest(T item)
+    {
+        {
+            std::lock_guard lock(m_mutex);
+
+            if (m_closed)
+                return false;
+
+            if (m_queue.size() >= m_capacity)
+            {
+                std::cout << "[VideoQueue] Dropped oldest frame" << std::endl;
+                m_queue.pop_front();
+            }
+
+            m_queue.push_back(std::move(item));
+        }
+
+        m_notEmpty.notify_one();
+
+        return true;
+    }
+
     bool Pop(T& item, std::stop_token stopToken = {})
     {
-        std::unique_lock lock(m_mutex);
-        const bool ready = m_notEmpty.wait(lock, stopToken, [this] { return m_closed || !m_queue.empty(); });
+        {
+            std::unique_lock lock(m_mutex);
 
-        if (!ready || m_queue.empty())
-            return false;
+            const bool ready = m_notEmpty.wait(lock, stopToken, [this] { return m_closed || !m_queue.empty(); });
 
-        item = std::move(m_queue.front());
-        m_queue.pop_front();
+            if (!ready || m_queue.empty())
+                return false;
 
-        lock.unlock();
+            item = std::move(m_queue.front());
+            m_queue.pop_front();
+        }
+
         m_notFull.notify_one();
 
         return true;
@@ -73,6 +96,7 @@ public:
     {
         {
             std::lock_guard lock(m_mutex);
+
             if (m_queue.empty())
                 return false;
 
@@ -95,6 +119,16 @@ public:
     {
         std::lock_guard lock(m_mutex);
         return m_queue.size();
+    }
+
+    void SetCapacity(size_t capacity)
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            m_capacity = capacity;
+        }
+
+        m_notFull.notify_all();
     }
 
     void Close()
@@ -123,8 +157,8 @@ public:
 private:
     mutable std::mutex m_mutex;
     std::condition_variable_any m_notEmpty;
-    std::condition_variable m_notFull;
+    std::condition_variable_any m_notFull;
     std::deque<T> m_queue;
-    const std::size_t m_capacity;
+    std::size_t m_capacity{ 0 };
     bool m_closed{ false };
 };

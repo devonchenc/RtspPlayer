@@ -72,8 +72,7 @@ bool RtspPlayer::Open(const std::string& url)
 
     m_sdlInitialized = true;
 
-    // Audio is optional. Failure to initialize audio must not prevent
-    // video-only playback.
+    // Audio is optional. Failure to initialize audio must not prevent video-only playback
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
     {
         std::cerr << "SDL audio initialization unavailable: " << SDL_GetError() << '\n';
@@ -220,6 +219,10 @@ bool RtspPlayer::InitializeVideoDecoder()
         LogFFmpegError("avcodec_open2(video)", result);
         return false;
     }
+
+    // Initialize video frame queue capacity
+    const size_t maxQueueSize = GetMaxVideoFrameQueueSize();
+    m_videoFrameQueue.SetCapacity(maxQueueSize);
 
     return true;
 }
@@ -495,7 +498,7 @@ void RtspPlayer::VideoDecodeThread(std::stop_token stopToken)
 
     while (!stopToken.stop_requested() && m_videoPacketQueue.Pop(packet, stopToken))
     {
-        if (!DecodeVideoPacket(packet.get()))
+        if (!DecodeVideoPacket(packet.get(), stopToken))
         {
             std::cerr << "Video decoding failed\n";
             break;
@@ -504,7 +507,7 @@ void RtspPlayer::VideoDecodeThread(std::stop_token stopToken)
     }
 
     if (!stopToken.stop_requested() && !m_stopping.load())
-        FlushVideoDecoder();
+        FlushVideoDecoder(stopToken);
 
     m_videoDone.store(true);
     NotifyDataReady();
@@ -534,13 +537,13 @@ void RtspPlayer::AudioDecodeThread(std::stop_token stopToken)
     NotifyDataReady();
 }
 
-bool RtspPlayer::DecodeVideoPacket(AVPacket* packet)
+bool RtspPlayer::DecodeVideoPacket(AVPacket* packet, std::stop_token stopToken)
 {
     int result = avcodec_send_packet(m_videoCodecContext.get(), packet);
 
     if (result == AVERROR(EAGAIN))
     {
-        if (!ReceiveVideoFrames())
+        if (!ReceiveVideoFrames(stopToken))
             return false;
 
         result = avcodec_send_packet(m_videoCodecContext.get(), packet);
@@ -552,10 +555,10 @@ bool RtspPlayer::DecodeVideoPacket(AVPacket* packet)
         return false;
     }
 
-    return ReceiveVideoFrames();
+    return ReceiveVideoFrames(stopToken);
 }
 
-bool RtspPlayer::ReceiveVideoFrames()
+bool RtspPlayer::ReceiveVideoFrames(std::stop_token stopToken)
 {
     while (true)
     {
@@ -594,20 +597,20 @@ bool RtspPlayer::ReceiveVideoFrames()
 
         ++m_decodedFrameCount;
 
-        if (!m_videoFrameQueue.PushDropOldest(std::move(output)))
+        if (!m_videoFrameQueue.PushWait(std::move(output), stopToken))
             return false;
 
         NotifyDataReady();
     }
 }
 
-bool RtspPlayer::FlushVideoDecoder()
+bool RtspPlayer::FlushVideoDecoder(std::stop_token stopToken)
 {
     int result = avcodec_send_packet(m_videoCodecContext.get(), nullptr);
 
     if (result == AVERROR(EAGAIN))
     {
-        if (!ReceiveVideoFrames())
+        if (!ReceiveVideoFrames(stopToken))
             return false;
         result = avcodec_send_packet(m_videoCodecContext.get(), nullptr);
     }
@@ -618,7 +621,7 @@ bool RtspPlayer::FlushVideoDecoder()
         return false;
     }
 
-    return ReceiveVideoFrames();
+    return ReceiveVideoFrames(stopToken);
 }
 
 bool RtspPlayer::DecodeAudioPacket(AVPacket* packet)
@@ -697,7 +700,7 @@ bool RtspPlayer::ConvertAudioFrame(AVFrame* frame)
     if (outputCapacity <= 0)
         return true;
 
-    // Capture the resampler delay before consuming this input frame.
+    // Capture the resampler delay before consuming this input frame
     const double resamplerDelay = static_cast<double>(swr_get_delay(m_swrContext.get(), frame->sample_rate)) / frame->sample_rate;
 
     AudioBuffer output;
@@ -712,7 +715,9 @@ bool RtspPlayer::ConvertAudioFrame(AVFrame* frame)
     std::vector<const std::uint8_t*> inputPlanes(static_cast<std::size_t>(inputPlaneCount));
 
     for (int i = 0; i < inputPlaneCount; ++i)
+    {
         inputPlanes[static_cast<std::size_t>(i)] = frame->extended_data[i];
+    }
 
     const int converted = swr_convert(m_swrContext.get(), outputPlanes, outputCapacity, inputPlanes.data(), frame->nb_samples);
 
@@ -910,11 +915,6 @@ void RtspPlayer::ScheduleVideoFrame()
             m_videoClockStarted = true;
         }
 
-        std::cout << "Video PTS: " << m_pendingVideoFrame->pts
-                  << ", Master Clock: " << GetMasterClock()
-                  << ", Difference: " << m_pendingVideoFrame->pts - GetMasterClock()
-                  << ", Queue Size: " << m_videoFrameQueue.Size() << '\n';
-
         const double difference = m_pendingVideoFrame->pts - GetMasterClock();
 
         if (difference > kEarlyFrameThresholdSeconds)
@@ -1098,6 +1098,18 @@ void RtspPlayer::Play()
     StopThreads();
 }
 
+size_t RtspPlayer::GetMaxVideoFrameQueueSize() const
+{
+    AVRational frameRate = av_guess_frame_rate(m_formatContext.get(), m_videoAVStream, nullptr);
+
+    if (frameRate.num <= 0 || frameRate.den <= 0)
+        return 50;
+
+    const double fps = av_q2d(frameRate);
+    const double bufferSeconds = std::chrono::duration<double>(m_config.videoBufferDurationMs).count();
+    return std::max<size_t>(1, static_cast<size_t>(std::ceil(fps * bufferSeconds)));
+}
+
 void RtspPlayer::PrintStatistics()
 {
     const auto now = std::chrono::steady_clock::now();
@@ -1118,12 +1130,10 @@ void RtspPlayer::PrintStatistics()
     const double decodedFps = (decoded - m_lastDecodedFrameCount) / elapsed;
     const double renderedFps = (rendered - m_lastRenderedFrameCount) / elapsed;
 
-    std::cout
-        << "\n========== Player Statistics ==========\n"
+    std::cout << "\n========== Player Statistics ==========\n"
         << "Decoded FPS:  " << decodedFps << '\n'
         << "Rendered FPS: " << renderedFps << '\n'
-        << "Queue Size:   " << m_videoFrameQueue.Size() << '\n'
-        << "=======================================\n";
+        << "Queue Size:   " << m_videoFrameQueue.Size() << '\n';
 
     m_lastDecodedFrameCount = decoded;
     m_lastRenderedFrameCount = rendered;
