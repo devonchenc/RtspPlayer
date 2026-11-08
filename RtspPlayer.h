@@ -48,7 +48,8 @@ private:
             if (p) avformat_close_input(&p);
         }
     };
-    struct CodecDeleter {
+    struct CodecDeleter
+    {
         void operator()(AVCodecContext* p) const
         {
             if (p) avcodec_free_context(&p);
@@ -163,8 +164,7 @@ private:
     void ScheduleVideoFrame();
     void RenderVideoFrame(AVFrame* frame);
 
-    double NormalizeTimestamp(std::int64_t timestamp,
-        AVRational timeBase) const;
+    double NormalizeTimestamp(std::int64_t timestamp, AVRational timeBase) const;
     double GetAudioClock() const;
     double GetVideoClock() const;
     double GetMasterClock() const;
@@ -181,22 +181,22 @@ private:
     SwsPtr m_swsContext;
     SwrPtr m_swrContext;
 
-    AVStream* m_videoAVStream = nullptr;
-    AVStream* m_audioAVStream = nullptr;
+    AVStream* m_videoAVStream{ nullptr };
+    AVStream* m_audioAVStream{ nullptr };
 
-    int m_videoStreamIndex = -1;
-    int m_audioStreamIndex = -1;
-    double m_timestampOrigin = 0.0;
+    int m_videoStreamIndex{ -1 };
+    int m_audioStreamIndex{ -1 };
+    double m_timestampOrigin{ 0.0 };
 
     // SDL objects (created, used and destroyed on the main thread)
     WindowPtr m_window;
     RendererPtr m_renderer;
     TexturePtr m_texture;
     AudioStreamPtr m_sdlAudioStream;
-    AVFrame* m_yuvFrame = nullptr;
-    bool m_sdlInitialized = false;
+    AVFrame* m_yuvFrame{ nullptr };
+    bool m_sdlInitialized{ false };
 
-    Uint32 m_dataReadyEvent = 0;
+    Uint32 m_dataReadyEvent{ 0 };
     std::atomic_bool m_dataReadyEventPending{ false };
 
     // Queues
@@ -215,21 +215,21 @@ private:
     std::atomic_bool m_audioDone{ false };
 
     // Video decoder thread only
-    double m_videoNextPts = 0.0;
-    bool m_videoNextPtsValid = false;
+    double m_videoNextPts{ 0.0 };
+    bool m_videoNextPtsValid{ false };
 
     // Audio decoder thread only
-    double m_audioNextPts = 0.0;
-    bool m_audioNextPtsValid = false;
+    double m_audioNextPts{ 0.0 };
+    bool m_audioNextPtsValid{ false };
 
     // Main thread only: pending video frame and video clock
     std::optional<VideoFrame> m_pendingVideoFrame;
-    bool m_videoClockStarted = false;
-    double m_videoClockBasePts = 0.0;
+    bool m_videoClockStarted{ false };
+    double m_videoClockBasePts{ 0.0 };
     std::chrono::steady_clock::time_point m_videoClockBaseTime{};
 
     // Main thread only: audio clock
-    bool m_audioClockStarted = false;
-    double m_audioClockBasePts = 0.0;
-    std::int64_t m_audioSamplesSubmitted = 0;
+    bool m_audioClockStarted{ false };
+    double m_audioClockBasePts{ 0.0 };
+    std::int64_t m_audioSamplesSubmitted{ 0 };
 };

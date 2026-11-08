@@ -76,8 +76,7 @@ bool RtspPlayer::Open(const std::string& url)
     // video-only playback.
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
     {
-        std::cerr << "SDL audio initialization unavailable: "
-            << SDL_GetError() << '\n';
+        std::cerr << "SDL audio initialization unavailable: " << SDL_GetError() << '\n';
     }
 
     m_dataReadyEvent = SDL_RegisterEvents(1);

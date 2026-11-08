@@ -1,9 +1,9 @@
 #pragma once
 
-#include <iostream>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
+#include <iostream>
 #include <mutex>
 #include <stop_token>
 #include <utility>
@@ -126,5 +126,5 @@ private:
     std::condition_variable m_notFull;
     std::deque<T> m_queue;
     const std::size_t m_capacity;
-    bool m_closed = false;
+    bool m_closed{ false };
 };
