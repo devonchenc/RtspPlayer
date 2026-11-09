@@ -1022,15 +1022,15 @@ void RtspPlayer::RenderVideoFrame(AVFrame* frame)
     const int width = frame->width;
     const int height = frame->height;
 
-    SwsContext* cached = sws_getCachedContext(m_swsContext.release(), width, height, static_cast<AVPixelFormat>(frame->format),
+    SwsContext* cachedContext = sws_getCachedContext(m_swsContext.release(), width, height, static_cast<AVPixelFormat>(frame->format),
         width, height, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
-    m_swsContext.reset(cached);
-
-    if (!m_swsContext)
+    if (!cachedContext)
     {
         std::cerr << "sws_getCachedContext failed" << std::endl;
         return;
     }
+
+    m_swsContext.reset(cachedContext);
 
     if (m_yuvFrame->width != width || m_yuvFrame->height != height)
     {
