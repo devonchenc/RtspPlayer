@@ -1,7 +1,13 @@
 #pragma once
 
-#include "BlockingQueue.h"
-
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
 #include <SDL3/SDL.h>
 
 extern "C"
@@ -15,14 +21,7 @@ extern "C"
 #include <libswscale/swscale.h>
 }
 
-#include <atomic>
-#include <chrono>
-#include <cstdint>
-#include <memory>
-#include <optional>
-#include <string>
-#include <thread>
-#include <vector>
+#include "BlockingQueue.h"
 
 struct PlayerConfig
 {

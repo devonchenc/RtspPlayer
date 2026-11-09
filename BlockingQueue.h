@@ -1,12 +1,10 @@
 #pragma once
 
 #include <condition_variable>
-#include <cstddef>
 #include <deque>
 #include <iostream>
 #include <mutex>
 #include <stop_token>
-#include <utility>
 
 template<class T>
 class BlockingQueue

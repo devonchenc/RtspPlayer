@@ -29,7 +29,7 @@ void RtspPlayer::LogFFmpegError(const char* operation, int error)
 {
     char buffer[AV_ERROR_MAX_STRING_SIZE]{};
     av_strerror(error, buffer, sizeof(buffer));
-    std::cerr << operation << " failed: " << buffer << '\n';
+    std::cerr << operation << " failed: " << buffer << std::endl;
 }
 
 bool RtspPlayer::Open(const std::string& url)
@@ -58,14 +58,14 @@ bool RtspPlayer::Open(const std::string& url)
 
     if (avformat_network_init() < 0)
     {
-        std::cerr << "avformat_network_init failed\n";
+        std::cerr << "avformat_network_init failed" << std::endl;
         Stop();
         return false;
     }
 
-    if (!SDL_Init(SDL_INIT_VIDEO))
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
     {
-        std::cerr << "SDL_Init(video) failed: " << SDL_GetError() << '\n';
+        std::cerr << "SDL video initialization failed: " << SDL_GetError() << std::endl;
         Stop();
         return false;
     }
@@ -75,13 +75,13 @@ bool RtspPlayer::Open(const std::string& url)
     // Audio is optional. Failure to initialize audio must not prevent video-only playback
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO))
     {
-        std::cerr << "SDL audio initialization unavailable: " << SDL_GetError() << '\n';
+        std::cerr << "SDL audio initialization failed: " << SDL_GetError() << std::endl;
     }
 
     m_dataReadyEvent = SDL_RegisterEvents(1);
     if (m_dataReadyEvent == static_cast<Uint32>(-1))
     {
-        std::cerr << "SDL_RegisterEvents failed: " << SDL_GetError() << '\n';
+        std::cerr << "SDL_RegisterEvents failed: " << SDL_GetError() << std::endl;
         Stop();
         return false;
     }
@@ -101,7 +101,7 @@ bool RtspPlayer::InitializeFFmpeg(const std::string& url)
     AVFormatContext* rawFormat = avformat_alloc_context();
     if (!rawFormat)
     {
-        std::cerr << "avformat_alloc_context failed\n";
+        std::cerr << "avformat_alloc_context failed" << std::endl;
         return false;
     }
 
@@ -137,7 +137,7 @@ bool RtspPlayer::InitializeFFmpeg(const std::string& url)
 
     if (m_videoStreamIndex < 0)
     {
-        std::cerr << "The input has no decodable video stream\n";
+        std::cerr << "The input has no decodable video stream" << std::endl;
         return false;
     }
 
@@ -193,7 +193,7 @@ bool RtspPlayer::InitializeVideoDecoder()
     const AVCodec* codec = avcodec_find_decoder(m_videoAVStream->codecpar->codec_id);
     if (!codec)
     {
-        std::cerr << "Video decoder not found\n";
+        std::cerr << "Video decoder not found" << std::endl;
         return false;
     }
 
@@ -232,7 +232,7 @@ bool RtspPlayer::InitializeAudioDecoder()
     const AVCodec* codec = avcodec_find_decoder(m_audioAVStream->codecpar->codec_id);
     if (!codec)
     {
-        std::cerr << "Audio decoder not found; using video-only playback\n";
+        std::cerr << "Audio decoder not found; using video-only playback" << std::endl;
         return false;
     }
 
@@ -266,24 +266,24 @@ bool RtspPlayer::InitializeSDL()
     const int width = std::max(1, m_videoCodecContext->width);
     const int height = std::max(1, m_videoCodecContext->height);
 
-    m_window.reset(SDL_CreateWindow("FFmpeg RTSP Player", width, height, SDL_WINDOW_RESIZABLE));
+    m_window.reset(SDL_CreateWindow("RTSP Player", width, height, SDL_WINDOW_RESIZABLE));
     if (!m_window)
     {
-        std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << '\n';
+        std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << std::endl;
         return false;
     }
 
     m_renderer.reset(SDL_CreateRenderer(m_window.get(), nullptr));
     if (!m_renderer)
     {
-        std::cerr << "SDL_CreateRenderer failed: " << SDL_GetError() << '\n';
+        std::cerr << "SDL_CreateRenderer failed: " << SDL_GetError() << std::endl;
         return false;
     }
 
     m_texture.reset(SDL_CreateTexture(m_renderer.get(), SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, width, height));
     if (!m_texture)
     {
-        std::cerr << "SDL_CreateTexture failed: " << SDL_GetError() << '\n';
+        std::cerr << "SDL_CreateTexture failed: " << SDL_GetError() << std::endl;
         return false;
     }
 
@@ -304,7 +304,7 @@ bool RtspPlayer::InitializeSDL()
 
     if (m_audioCodecContext && !InitializeAudioOutput())
     {
-        std::cerr << "Audio output unavailable; continuing video-only\n";
+        std::cerr << "Audio output unavailable; continuing video-only" << std::endl;
         m_swrContext.reset();
         m_audioCodecContext.reset();
         m_audioAVStream = nullptr;
@@ -318,7 +318,7 @@ bool RtspPlayer::InitializeAudioOutput()
 {
     if (!SDL_WasInit(SDL_INIT_AUDIO))
     {
-        std::cerr << "SDL audio subsystem is not initialized\n";
+        std::cerr << "SDL audio subsystem is not initialized" << std::endl;
         return false;
     }
 
@@ -331,7 +331,7 @@ bool RtspPlayer::InitializeAudioOutput()
 
     if (!m_sdlAudioStream)
     {
-        std::cerr << "SDL_OpenAudioDeviceStream failed: " << SDL_GetError() << '\n';
+        std::cerr << "SDL_OpenAudioDeviceStream failed: " << SDL_GetError() << std::endl;
         return false;
     }
 
@@ -361,7 +361,7 @@ bool RtspPlayer::InitializeAudioOutput()
 
     if (!SDL_ResumeAudioStreamDevice(m_sdlAudioStream.get()))
     {
-        std::cerr << "SDL_ResumeAudioStreamDevice failed: " << SDL_GetError() << '\n';
+        std::cerr << "SDL_ResumeAudioStreamDevice failed: " << SDL_GetError() << std::endl;
         return false;
     }
 
@@ -450,7 +450,7 @@ void RtspPlayer::Stop()
     m_audioClockStarted = false;
     m_audioSamplesSubmitted = 0;
 
-    m_videoDone = false;;
+    m_videoDone = false;
     m_audioDone = false;
 
     if (m_sdlInitialized)
@@ -500,7 +500,7 @@ void RtspPlayer::VideoDecodeThread(std::stop_token stopToken)
     {
         if (!DecodeVideoPacket(packet.get(), stopToken))
         {
-            std::cerr << "Video decoding failed\n";
+            std::cerr << "Video decoding failed" << std::endl;
             break;
         }
         packet.reset();
@@ -521,7 +521,7 @@ void RtspPlayer::AudioDecodeThread(std::stop_token stopToken)
     {
         if (!DecodeAudioPacket(packet.get()))
         {
-            std::cerr << "Audio decoding failed\n";
+            std::cerr << "Audio decoding failed" << std::endl;
             break;
         }
         packet.reset();
@@ -801,7 +801,7 @@ void RtspPlayer::NotifyDataReady()
 
     if (!SDL_PushEvent(&event))
     {
-        std::cerr << "SDL_PushEvent failed: " << SDL_GetError() << '\n';
+        std::cerr << "SDL_PushEvent failed: " << SDL_GetError() << std::endl;
         m_dataReadyEventPending = false;
     }
 }
@@ -834,7 +834,7 @@ void RtspPlayer::SubmitAudio()
 
         if (!SDL_PutAudioStreamData(m_sdlAudioStream.get(), buffer.data.data(), static_cast<int>(buffer.data.size())))
         {
-            std::cerr << "SDL_PutAudioStreamData failed: " << SDL_GetError() << '\n';
+            std::cerr << "SDL_PutAudioStreamData failed: " << SDL_GetError() << std::endl;
             continue;
         }
 
@@ -960,7 +960,7 @@ void RtspPlayer::RenderVideoFrame(AVFrame* frame)
 
     if (!m_swsContext)
     {
-        std::cerr << "sws_getCachedContext failed\n";
+        std::cerr << "sws_getCachedContext failed" << std::endl;
         return;
     }
 
@@ -982,7 +982,7 @@ void RtspPlayer::RenderVideoFrame(AVFrame* frame)
 
         if (!m_texture)
         {
-            std::cerr << "SDL_CreateTexture(resize) failed: " << SDL_GetError() << '\n';
+            std::cerr << "SDL_CreateTexture(resize) failed: " << SDL_GetError() << std::endl;
             return;
         }
     }
@@ -1010,7 +1010,7 @@ void RtspPlayer::RenderVideoFrame(AVFrame* frame)
 
     if (!SDL_UpdateYUVTexture(m_texture.get(), nullptr, m_yuvFrame->data[0], m_yuvFrame->linesize[0], m_yuvFrame->data[1], m_yuvFrame->linesize[1], m_yuvFrame->data[2], m_yuvFrame->linesize[2]))
     {
-        std::cerr << "SDL_UpdateYUVTexture failed: " << SDL_GetError() << '\n';
+        std::cerr << "SDL_UpdateYUVTexture failed: " << SDL_GetError() << std::endl;
         return;
     }
 
@@ -1033,7 +1033,7 @@ void RtspPlayer::Play()
 {
     if (!m_formatContext || !m_videoCodecContext || !m_renderer)
     {
-        std::cerr << "Call Open() successfully before Play()\n";
+        std::cerr << "Call Open() successfully before Play()" << std::endl;
         return;
     }
 
@@ -1124,7 +1124,7 @@ void RtspPlayer::PrintStatistics()
         << "Decoded FPS:  " << decodedFps << '\n'
         << "Rendered FPS: " << renderedFps << '\n'
         << "Video Queue Size:   " << m_videoFrameQueue.Size() << '\n'
-        << "Audio Queue Size:   " << m_audioBufferQueue.Size() << '\n';
+        << "Audio Queue Size:   " << m_audioBufferQueue.Size() << std::endl;
 
     m_lastDecodedFrameCount = m_decodedFrameCount;
     m_lastRenderedFrameCount = m_renderedFrameCount;
