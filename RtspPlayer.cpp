@@ -41,10 +41,10 @@ bool RtspPlayer::Open(const std::string& url)
     m_videoFrameQueue.Reset();
     m_audioBufferQueue.Reset();
 
-    m_stopping.store(false);
-    m_videoDone.store(false);
-    m_audioDone.store(false);
-    m_dataReadyEventPending.store(false);
+    m_stopping = false;
+    m_videoDone = false;
+    m_audioDone = false;
+    m_dataReadyEventPending = false;
 
     m_videoNextPts = 0.0;
     m_videoNextPtsValid = false;
@@ -92,7 +92,7 @@ bool RtspPlayer::Open(const std::string& url)
         return false;
     }
 
-    m_audioDone.store(m_audioCodecContext == nullptr);
+    m_audioDone = (m_audioCodecContext == nullptr);
     return true;
 }
 
@@ -110,7 +110,7 @@ bool RtspPlayer::InitializeFFmpeg(const std::string& url)
 
     AVDictionary* options = nullptr;
     av_dict_set(&options, "rtsp_transport", "tcp", 0);
-    // rw_timeout is in microseconds for FFmpeg protocols that support it.
+    // rw_timeout is in microseconds for FFmpeg protocols that support it
     av_dict_set(&options, "rw_timeout", "5000000", 0);
 
     const int openResult = avformat_open_input(&rawFormat, url.c_str(), nullptr, &options);
@@ -174,7 +174,7 @@ bool RtspPlayer::InitializeFFmpeg(const std::string& url)
     if (!InitializeVideoDecoder())
         return false;
 
-    // Audio is optional. If decoder or output setup fails, continue video-only.
+    // Audio is optional. If decoder or output setup fails, continue video-only
     if (m_audioAVStream)
     {
         if (!InitializeAudioDecoder())
@@ -379,7 +379,7 @@ double RtspPlayer::NormalizeTimestamp(std::int64_t timestamp, AVRational timeBas
 int RtspPlayer::InterruptCallback(void* opaque)
 {
     const auto* player = static_cast<RtspPlayer*>(opaque);
-    return player->m_stopping.load() ? 1 : 0;
+    return player->m_stopping ? 1 : 0;
 }
 
 void RtspPlayer::StartThreads()
@@ -394,13 +394,13 @@ void RtspPlayer::StartThreads()
     }
     else
     {
-        m_audioDone.store(true);
+        m_audioDone = true;
     }
 }
 
 void RtspPlayer::StopThreads()
 {
-    m_stopping.store(true);
+    m_stopping = true;
 
     m_demuxThread.request_stop();
     m_videoDecodeThread.request_stop();
@@ -421,7 +421,7 @@ void RtspPlayer::StopThreads()
 
 void RtspPlayer::Stop()
 {
-    m_stopping.store(true);
+    m_stopping = true;
     StopThreads();
 
     m_pendingVideoFrame.reset();
@@ -450,8 +450,8 @@ void RtspPlayer::Stop()
     m_audioClockStarted = false;
     m_audioSamplesSubmitted = 0;
 
-    m_videoDone.store(false);
-    m_audioDone.store(false);
+    m_videoDone = false;;
+    m_audioDone = false;
 
     if (m_sdlInitialized)
     {
@@ -462,7 +462,7 @@ void RtspPlayer::Stop()
 
 void RtspPlayer::DemuxThread(std::stop_token stopToken)
 {
-    while (!stopToken.stop_requested() && !m_stopping.load())
+    while (!stopToken.stop_requested() && !m_stopping)
     {
         PacketPtr packet(av_packet_alloc());
         if (!packet)
@@ -471,7 +471,7 @@ void RtspPlayer::DemuxThread(std::stop_token stopToken)
         const int result = av_read_frame(m_formatContext.get(), packet.get());
         if (result < 0)
         {
-            if (result != AVERROR_EOF && !m_stopping.load())
+            if (result != AVERROR_EOF && !m_stopping)
                 LogFFmpegError("av_read_frame", result);
             break;
         }
@@ -506,10 +506,10 @@ void RtspPlayer::VideoDecodeThread(std::stop_token stopToken)
         packet.reset();
     }
 
-    if (!stopToken.stop_requested() && !m_stopping.load())
+    if (!stopToken.stop_requested() && !m_stopping)
         FlushVideoDecoder(stopToken);
 
-    m_videoDone.store(true);
+    m_videoDone = true;
     NotifyDataReady();
 }
 
@@ -527,13 +527,13 @@ void RtspPlayer::AudioDecodeThread(std::stop_token stopToken)
         packet.reset();
     }
 
-    if (!stopToken.stop_requested() && !m_stopping.load())
+    if (!stopToken.stop_requested() && !m_stopping)
     {
         FlushAudioDecoder();
         FlushResampler();
     }
 
-    m_audioDone.store(true);
+    m_audioDone = true;
     NotifyDataReady();
 }
 
@@ -696,7 +696,6 @@ bool RtspPlayer::ConvertAudioFrame(AVFrame* frame)
         return false;
 
     const int outputCapacity = swr_get_out_samples(m_swrContext.get(), frame->nb_samples);
-
     if (outputCapacity <= 0)
         return true;
 
@@ -705,22 +704,17 @@ bool RtspPlayer::ConvertAudioFrame(AVFrame* frame)
 
     AudioBuffer output;
     output.data.resize(static_cast<std::size_t>(outputCapacity) * BytesPerAudioFrame);
-
     std::uint8_t* outputPlanes[] = { output.data.data() };
 
     const AVSampleFormat inputFormat = static_cast<AVSampleFormat>(frame->format);
-
     const int inputPlaneCount = av_sample_fmt_is_planar(inputFormat) ? std::max(1, frame->ch_layout.nb_channels) : 1;
-
     std::vector<const std::uint8_t*> inputPlanes(static_cast<std::size_t>(inputPlaneCount));
-
     for (int i = 0; i < inputPlaneCount; ++i)
     {
         inputPlanes[static_cast<std::size_t>(i)] = frame->extended_data[i];
     }
 
     const int converted = swr_convert(m_swrContext.get(), outputPlanes, outputCapacity, inputPlanes.data(), frame->nb_samples);
-
     if (converted < 0)
     {
         LogFFmpegError("swr_convert", converted);
@@ -733,7 +727,6 @@ bool RtspPlayer::ConvertAudioFrame(AVFrame* frame)
     output.data.resize(static_cast<std::size_t>(converted) * BytesPerAudioFrame);
 
     const double inputPts = NormalizeTimestamp(frame->best_effort_timestamp, m_audioAVStream->time_base);
-
     double pts = IsValidTimestamp(inputPts) ? inputPts - resamplerDelay : (m_audioNextPtsValid ? m_audioNextPts : 0.0);
 
     // Preserve continuity for small timestamp rounding differences, but accept a real timestamp discontinuity
@@ -797,7 +790,7 @@ bool RtspPlayer::FlushResampler()
 
 void RtspPlayer::NotifyDataReady()
 {
-    if (m_stopping.load())
+    if (m_stopping)
         return;
 
     if (m_dataReadyEventPending.exchange(true))
@@ -809,7 +802,7 @@ void RtspPlayer::NotifyDataReady()
     if (!SDL_PushEvent(&event))
     {
         std::cerr << "SDL_PushEvent failed: " << SDL_GetError() << '\n';
-        m_dataReadyEventPending.store(false);
+        m_dataReadyEventPending = false;
     }
 }
 
@@ -818,8 +811,8 @@ void RtspPlayer::HandleDataReady()
     SubmitAudio();
 
     // Clear after consuming available audio. If audio arrived in the
-    // meantime, post another wake-up. Video queue is inspected by scheduler.
-    m_dataReadyEventPending.store(false);
+    // meantime, post another wake-up. Video queue is inspected by scheduler
+    m_dataReadyEventPending = false;
 
     if (!m_audioBufferQueue.Empty())
         NotifyDataReady();
@@ -867,7 +860,6 @@ double RtspPlayer::GetAudioClock() const
         return m_audioClockBasePts;
 
     const std::int64_t queuedSamples = queuedBytes / BytesPerAudioFrame;
-
     const std::int64_t playedSamples = std::clamp<std::int64_t>(m_audioSamplesSubmitted - queuedSamples, 0, m_audioSamplesSubmitted);
 
     return m_audioClockBasePts + static_cast<double>(playedSamples) / AudioSampleRate;
@@ -905,7 +897,7 @@ void RtspPlayer::ScheduleVideoFrame()
 
         // If an audio stream is expected, wait for its clock to start.
         // If audio decoding ended without producing audio, fall back to video.
-        if (m_sdlAudioStream && !m_audioClockStarted && !m_audioDone.load())
+        if (m_sdlAudioStream && !m_audioClockStarted && !m_audioDone)
             return;
 
         if (!m_videoClockStarted)
@@ -940,7 +932,7 @@ int RtspPlayer::GetNextVideoWaitTimeout() const
     if (!m_pendingVideoFrame)
         return -1;
 
-    if (m_sdlAudioStream && !m_audioClockStarted && !m_audioDone.load())
+    if (m_sdlAudioStream && !m_audioClockStarted && !m_audioDone)
         return -1;
 
     const double difference = m_pendingVideoFrame->pts - GetMasterClock();
@@ -1050,15 +1042,14 @@ void RtspPlayer::Play()
     bool running = true;
     SDL_Event event{};
 
-    while (running && !m_stopping.load())
+    while (running && !m_stopping)
     {
         ScheduleVideoFrame();
 
         PrintStatistics();
 
-        const bool videoFinished = m_videoDone.load() && m_videoFrameQueue.Empty() && !m_pendingVideoFrame;
-
-        const bool audioDecodeFinished = m_audioDone.load() && m_audioBufferQueue.Empty();
+        const bool videoFinished = m_videoDone && m_videoFrameQueue.Empty() && !m_pendingVideoFrame;
+        const bool audioDecodeFinished = m_audioDone && m_audioBufferQueue.Empty();
 
         int queuedAudioBytes = 0;
         if (m_sdlAudioStream)
@@ -1107,12 +1098,13 @@ size_t RtspPlayer::GetMaxVideoFrameQueueSize() const
 
     const double fps = av_q2d(frameRate);
     const double bufferSeconds = std::chrono::duration<double>(m_config.videoBufferDurationMs).count();
+
     return std::max<size_t>(1, static_cast<size_t>(std::ceil(fps * bufferSeconds)));
 }
 
 void RtspPlayer::PrintStatistics()
 {
-    const auto now = std::chrono::steady_clock::now();
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 
     if (m_lastStatsTime.time_since_epoch().count() == 0)
     {
@@ -1125,17 +1117,16 @@ void RtspPlayer::PrintStatistics()
     if (elapsed < 1.0)
         return;
 
-    const auto decoded = m_decodedFrameCount.load();
-    const auto rendered = m_renderedFrameCount.load();
-    const double decodedFps = (decoded - m_lastDecodedFrameCount) / elapsed;
-    const double renderedFps = (rendered - m_lastRenderedFrameCount) / elapsed;
+    const double decodedFps = (m_decodedFrameCount - m_lastDecodedFrameCount) / elapsed;
+    const double renderedFps = (m_renderedFrameCount - m_lastRenderedFrameCount) / elapsed;
 
     std::cout << "\n========== Player Statistics ==========\n"
         << "Decoded FPS:  " << decodedFps << '\n'
         << "Rendered FPS: " << renderedFps << '\n'
-        << "Queue Size:   " << m_videoFrameQueue.Size() << '\n';
+        << "Video Queue Size:   " << m_videoFrameQueue.Size() << '\n'
+        << "Audio Queue Size:   " << m_audioBufferQueue.Size() << '\n';
 
-    m_lastDecodedFrameCount = decoded;
-    m_lastRenderedFrameCount = rendered;
+    m_lastDecodedFrameCount = m_decodedFrameCount;
+    m_lastRenderedFrameCount = m_renderedFrameCount;
     m_lastStatsTime = now;
 }
