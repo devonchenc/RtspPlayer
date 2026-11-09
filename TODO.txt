@@ -1,3 +1,5 @@
-1. 音视频同步： 目前视频解码出来就立即渲染，没有根据 PTS 控制播放时刻，因此实际播放会出现音画不同步。
-2. 停止机制： AVIOInterruptCB 可以协助中断网络读取，但如果线程正在执行其他阻塞操作，也需要相应的退出机制。这个 Demo 假设 Stop() 和 SDL 资源释放在播放器主线程执行。
-3. 错误处理： avcodec_send_packet() 返回 EAGAIN 时，需要先接收已有帧再重新发送；实际项目还应区分 EOF、超时和解码错误。
+1. 停止机制： AVIOInterruptCB 可以协助中断网络读取，但如果线程正在执行其他阻塞操作，也需要相应的退出机制。这个 Demo 假设 Stop() 和 SDL 资源释放在播放器主线程执行。
+2. 错误处理： avcodec_send_packet() 返回 EAGAIN 时，需要先接收已有帧再重新发送；实际项目还应区分 EOF、超时和解码错误。
+
+用 mediamtx + FFmpeg 生成本地 rtsp stream:
+ffmpeg -re -stream_loop -1 -i D:\FFmpeg\qable-sample-720p-10s.mp4 -c copy -f rtsp -rtsp_transport tcp rtsp://127.0.0.1:8554/test

@@ -11,14 +11,17 @@ int main(int argc, char* argv[])
     }
 
     RtspPlayer player;
-
     if (!player.Open(argv[1]))
     {
         std::cerr << "Failed to open RTSP stream\n";
         return 1;
     }
 
-    player.Play();
+    std::string_view arg = argv[1];
+    if (arg.starts_with("rtsp"))
+        player.PlayLive();
+    else
+        player.PlayRecorded();
 
     return 0;
 }

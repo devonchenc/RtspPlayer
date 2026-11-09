@@ -36,10 +36,15 @@ public:
         {
             std::unique_lock lock(m_mutex);
 
-            const bool ready = m_notFull.wait(lock, stopToken, [this] { return m_closed || m_queue.size() < m_capacity; });
+            const bool ready = m_notFull.wait(lock, stopToken, [this] { return m_closed || m_dropOldestWhenFull || m_queue.size() < m_capacity; });
 
-            if (!ready || m_closed)
+            if (!ready || m_closed || stopToken.stop_requested())
                 return false;
+
+            if (m_dropOldestWhenFull && m_queue.size() >= m_capacity)
+            {
+                m_queue.pop_front();
+            }
 
             m_queue.push_back(std::move(item));
         }
@@ -59,7 +64,6 @@ public:
 
             if (m_queue.size() >= m_capacity)
             {
-                std::cout << "[VideoQueue] Dropped oldest frame" << std::endl;
                 m_queue.pop_front();
             }
 
@@ -107,6 +111,16 @@ public:
         return true;
     }
 
+    void SetDropOldestWhenFull(bool enabled)
+    {
+        {
+            std::lock_guard lock(m_mutex);
+            m_dropOldestWhenFull = enabled;
+        }
+
+        m_notFull.notify_all();
+    }
+
     bool Empty() const
     {
         std::lock_guard lock(m_mutex);
@@ -127,6 +141,12 @@ public:
         }
 
         m_notFull.notify_all();
+    }
+
+    void Clear()
+    {
+        std::lock_guard lock(m_mutex);
+        m_queue.clear();
     }
 
     void Close()
@@ -159,4 +179,5 @@ private:
     std::deque<T> m_queue;
     std::size_t m_capacity{ 0 };
     bool m_closed{ false };
+    bool m_dropOldestWhenFull{ false };
 };

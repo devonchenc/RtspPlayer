@@ -11,7 +11,7 @@ namespace
     constexpr int AudioChannels = 2;
     constexpr int BytesPerSample = 2;
     constexpr int BytesPerAudioFrame = AudioChannels * BytesPerSample;
-    constexpr double kLateFrameThresholdSeconds = 0.100;
+    constexpr double kLateFrameThresholdSeconds = 0.500;
     constexpr double kEarlyFrameThresholdSeconds = 0.003;
 
     bool IsValidTimestamp(double value)
@@ -460,6 +460,63 @@ void RtspPlayer::Stop()
     }
 }
 
+void RtspPlayer::Pause()
+{
+    if (m_playbackState == PlaybackState::Stopped)
+        return;
+
+    if (m_playbackState.exchange(PlaybackState::Paused) == PlaybackState::Paused)
+        return;
+
+    if (m_streamType == StreamType::Live)
+    {
+        m_videoFrameQueue.SetDropOldestWhenFull(true);
+        m_audioBufferQueue.SetDropOldestWhenFull(true);
+    }
+
+    if (m_sdlAudioStream)
+    {
+        SDL_PauseAudioStreamDevice(m_sdlAudioStream.get());
+    }
+}
+
+void RtspPlayer::Resume()
+{
+    if (m_playbackState != PlaybackState::Paused)
+        return;
+
+    if (m_streamType == StreamType::Live)
+    {
+        m_videoFrameQueue.Clear();
+        m_audioBufferQueue.Clear();
+        m_videoFrameQueue.SetDropOldestWhenFull(false);
+        m_audioBufferQueue.SetDropOldestWhenFull(false);
+
+        // Discard audio data buffered inside SDL
+        SDL_ClearAudioStream(m_sdlAudioStream.get());
+
+        ResetAudioClock();
+    }
+
+    m_playbackState = PlaybackState::Playing;
+
+    if (m_sdlAudioStream)
+    {
+        SDL_ResumeAudioStreamDevice(m_sdlAudioStream.get());
+    }
+
+    NotifyDataReady();
+}
+
+void RtspPlayer::ResetAudioClock()
+{
+    std::lock_guard lock(m_audioClockMutex);
+
+    m_audioClockStarted = false;
+    m_audioClockBasePts = 0.0;
+    m_audioSamplesSubmitted = 0;
+}
+
 void RtspPlayer::DemuxThread(std::stop_token stopToken)
 {
     while (!stopToken.stop_requested() && !m_stopping)
@@ -519,7 +576,7 @@ void RtspPlayer::AudioDecodeThread(std::stop_token stopToken)
 
     while (!stopToken.stop_requested() && m_audioPacketQueue.Pop(packet, stopToken))
     {
-        if (!DecodeAudioPacket(packet.get()))
+        if (!DecodeAudioPacket(packet.get(), stopToken))
         {
             std::cerr << "Audio decoding failed" << std::endl;
             break;
@@ -529,7 +586,7 @@ void RtspPlayer::AudioDecodeThread(std::stop_token stopToken)
 
     if (!stopToken.stop_requested() && !m_stopping)
     {
-        FlushAudioDecoder();
+        FlushAudioDecoder(stopToken);
         FlushResampler();
     }
 
@@ -540,7 +597,6 @@ void RtspPlayer::AudioDecodeThread(std::stop_token stopToken)
 bool RtspPlayer::DecodeVideoPacket(AVPacket* packet, std::stop_token stopToken)
 {
     int result = avcodec_send_packet(m_videoCodecContext.get(), packet);
-
     if (result == AVERROR(EAGAIN))
     {
         if (!ReceiveVideoFrames(stopToken))
@@ -567,7 +623,6 @@ bool RtspPlayer::ReceiveVideoFrames(std::stop_token stopToken)
             return false;
 
         const int result = avcodec_receive_frame(m_videoCodecContext.get(), frame.get());
-
         if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
             return true;
 
@@ -624,13 +679,13 @@ bool RtspPlayer::FlushVideoDecoder(std::stop_token stopToken)
     return ReceiveVideoFrames(stopToken);
 }
 
-bool RtspPlayer::DecodeAudioPacket(AVPacket* packet)
+bool RtspPlayer::DecodeAudioPacket(AVPacket* packet, std::stop_token stopToken)
 {
     int result = avcodec_send_packet(m_audioCodecContext.get(), packet);
 
     if (result == AVERROR(EAGAIN))
     {
-        if (!ReceiveAudioFrames())
+        if (!ReceiveAudioFrames(stopToken))
             return false;
 
         result = avcodec_send_packet(m_audioCodecContext.get(), packet);
@@ -642,10 +697,10 @@ bool RtspPlayer::DecodeAudioPacket(AVPacket* packet)
         return false;
     }
 
-    return ReceiveAudioFrames();
+    return ReceiveAudioFrames(stopToken);
 }
 
-bool RtspPlayer::ReceiveAudioFrames()
+bool RtspPlayer::ReceiveAudioFrames(std::stop_token stopToken)
 {
     while (true)
     {
@@ -664,18 +719,18 @@ bool RtspPlayer::ReceiveAudioFrames()
             return false;
         }
 
-        if (!ConvertAudioFrame(frame.get()))
+        if (!ConvertAudioFrame(frame.get(), stopToken))
             return false;
     }
 }
 
-bool RtspPlayer::FlushAudioDecoder()
+bool RtspPlayer::FlushAudioDecoder(std::stop_token stopToken)
 {
     int result = avcodec_send_packet(m_audioCodecContext.get(), nullptr);
 
     if (result == AVERROR(EAGAIN))
     {
-        if (!ReceiveAudioFrames())
+        if (!ReceiveAudioFrames(stopToken))
             return false;
 
         result = avcodec_send_packet(m_audioCodecContext.get(), nullptr);
@@ -687,10 +742,10 @@ bool RtspPlayer::FlushAudioDecoder()
         return false;
     }
 
-    return ReceiveAudioFrames();
+    return ReceiveAudioFrames(stopToken);
 }
 
-bool RtspPlayer::ConvertAudioFrame(AVFrame* frame)
+bool RtspPlayer::ConvertAudioFrame(AVFrame* frame, std::stop_token stopToken)
 {
     if (!m_swrContext || frame->sample_rate <= 0)
         return false;
@@ -739,7 +794,7 @@ bool RtspPlayer::ConvertAudioFrame(AVFrame* frame)
     m_audioNextPts = pts + static_cast<double>(converted) / AudioSampleRate;
     m_audioNextPtsValid = true;
 
-    if (!m_audioBufferQueue.Push(std::move(output)))
+    if (!m_audioBufferQueue.PushWait(std::move(output), stopToken))
         return false;
 
     NotifyDataReady();
@@ -808,6 +863,12 @@ void RtspPlayer::NotifyDataReady()
 
 void RtspPlayer::HandleDataReady()
 {
+    if (IsPaused())
+    {
+        m_dataReadyEventPending = false;
+        return;
+    }
+
     SubmitAudio();
 
     // Clear after consuming available audio. If audio arrived in the
@@ -838,6 +899,8 @@ void RtspPlayer::SubmitAudio()
             continue;
         }
 
+        std::lock_guard lock(m_audioClockMutex);
+
         if (!m_audioClockStarted)
         {
             m_audioClockBasePts = buffer.pts;
@@ -851,7 +914,12 @@ void RtspPlayer::SubmitAudio()
 
 double RtspPlayer::GetAudioClock() const
 {
-    if (!m_sdlAudioStream || !m_audioClockStarted)
+    if (!m_sdlAudioStream)
+        return 0.0;
+
+    std::lock_guard lock(m_audioClockMutex);
+
+    if (!m_audioClockStarted)
         return 0.0;
 
     const int queuedBytes = SDL_GetAudioStreamQueued(m_sdlAudioStream.get());
@@ -1029,6 +1097,20 @@ void RtspPlayer::RenderVideoFrame(AVFrame* frame)
     SDL_RenderPresent(m_renderer.get());
 }
 
+void RtspPlayer::PlayLive()
+{
+    m_streamType = StreamType::Live;
+
+    Play();
+}
+
+void RtspPlayer::PlayRecorded()
+{
+    m_streamType = StreamType::Recorded;
+
+    Play();
+}
+
 void RtspPlayer::Play()
 {
     if (!m_formatContext || !m_videoCodecContext || !m_renderer)
@@ -1040,13 +1122,17 @@ void RtspPlayer::Play()
     StartThreads();
 
     bool running = true;
+    m_playbackState = PlaybackState::Playing;
     SDL_Event event{};
 
     while (running && !m_stopping)
     {
-        ScheduleVideoFrame();
+        if (!IsPaused())
+        {
+            ScheduleVideoFrame();
 
-        PrintStatistics();
+            PrintStatistics();
+        }
 
         const bool videoFinished = m_videoDone && m_videoFrameQueue.Empty() && !m_pendingVideoFrame;
         const bool audioDecodeFinished = m_audioDone && m_audioBufferQueue.Empty();
@@ -1055,16 +1141,20 @@ void RtspPlayer::Play()
         if (m_sdlAudioStream)
             queuedAudioBytes = SDL_GetAudioStreamQueued(m_sdlAudioStream.get());
 
-        if (videoFinished && audioDecodeFinished && queuedAudioBytes <= 0)
+        if (!IsPaused() && videoFinished && audioDecodeFinished && queuedAudioBytes <= 0)
             break;
 
-        int timeout = GetNextVideoWaitTimeout();
-
-        // Once decoding is finished, let SDL consume its remaining audio.
-        // Polling here is only for the final device drain, not normal playback.
-        if (videoFinished && audioDecodeFinished && queuedAudioBytes > 0 && (timeout < 0 || timeout > 20))
+        int timeout = -1;
+        if (!IsPaused())
         {
-            timeout = 20;
+            timeout = GetNextVideoWaitTimeout();
+
+            // Once decoding is finished, let SDL consume its remaining audio.
+            // Polling here is only for the final device drain, not normal playback.
+            if (videoFinished && audioDecodeFinished && queuedAudioBytes > 0 && (timeout < 0 || timeout > 20))
+            {
+                timeout = 20;
+            }
         }
 
         const bool gotEvent = (timeout < 0) ? SDL_WaitEvent(&event) : SDL_WaitEventTimeout(&event, timeout);
@@ -1076,9 +1166,17 @@ void RtspPlayer::Play()
         {
             running = false;
         }
-        else if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_ESCAPE)
+        else if (event.type == SDL_EVENT_KEY_DOWN)
         {
-            running = false;
+            if (event.key.key == SDLK_ESCAPE)
+                running = false;
+            else if (event.key.key == SDLK_SPACE)
+            {
+                if (IsPaused())
+                    Resume();
+                else
+                    Pause();
+            }
         }
         else if (event.type == m_dataReadyEvent)
         {

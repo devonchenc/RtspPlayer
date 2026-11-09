@@ -28,6 +28,19 @@ struct PlayerConfig
     std::chrono::milliseconds videoBufferDurationMs{ 1000 };
 };
 
+enum class StreamType
+{
+    Live,
+    Recorded
+};
+
+enum class PlaybackState
+{
+    Playing,
+    Paused,
+    Stopped
+};
+
 class RtspPlayer
 {
 public:
@@ -41,8 +54,12 @@ public:
 
 public:
     bool Open(const std::string& url);
-    void Play();
+    void PlayLive();
+    void PlayRecorded();
     void Stop();
+    void Pause();
+    void Resume();
+    bool IsPaused() const { return m_playbackState == PlaybackState::Paused; }
 
 private:
     struct FormatDeleter
@@ -145,6 +162,7 @@ private:
     bool InitializeSDL();
     bool InitializeAudioOutput();
 
+    void Play();
     void StartThreads();
     void StopThreads();
 
@@ -153,13 +171,14 @@ private:
     void AudioDecodeThread(std::stop_token stopToken);
 
     bool DecodeVideoPacket(AVPacket* packet, std::stop_token stopToken);
-    bool DecodeAudioPacket(AVPacket* packet);
+    bool DecodeAudioPacket(AVPacket* packet, std::stop_token stopToken);
     bool ReceiveVideoFrames(std::stop_token stopToken);
-    bool ReceiveAudioFrames();
+    bool ReceiveAudioFrames(std::stop_token stopToken);
     bool FlushVideoDecoder(std::stop_token stopToken);
-    bool FlushAudioDecoder();
+    bool FlushAudioDecoder(std::stop_token stopToken);
 
-    bool ConvertAudioFrame(AVFrame* frame);
+    bool ConvertAudioFrame(AVFrame* frame, std::stop_token stopToken);
+    void ResetAudioClock();
     bool FlushResampler();
 
     void NotifyDataReady();
@@ -209,12 +228,14 @@ private:
     BlockingQueue<PacketPtr> m_videoPacketQueue{ 128 };
     BlockingQueue<PacketPtr> m_audioPacketQueue{ 128 };
     BlockingQueue<VideoFrame> m_videoFrameQueue{ 30 };
-    BlockingQueue<AudioBuffer> m_audioBufferQueue{ 32 };
+    BlockingQueue<AudioBuffer> m_audioBufferQueue{ 10 };
 
     // Worker threads
     std::jthread m_demuxThread;
     std::jthread m_videoDecodeThread;
     std::jthread m_audioDecodeThread;
+
+    mutable std::mutex m_audioClockMutex;
 
     std::atomic<bool> m_stopping{ false };
     std::atomic<bool> m_videoDone{ false };
@@ -247,4 +268,7 @@ private:
     std::uint64_t m_lastRenderedFrameCount{ 0 };
 
     PlayerConfig m_config;
+
+    StreamType m_streamType{ StreamType::Live };
+    std::atomic<PlaybackState> m_playbackState{ PlaybackState::Stopped };
 };
