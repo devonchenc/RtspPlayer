@@ -7,12 +7,14 @@
 
 namespace
 {
-    constexpr int AudioSampleRate = 48000;
-    constexpr int AudioChannels = 2;
-    constexpr int BytesPerSample = 2;
-    constexpr int BytesPerAudioFrame = AudioChannels * BytesPerSample;
-    constexpr double kLateFrameThresholdSeconds = 0.500;
-    constexpr double kEarlyFrameThresholdSeconds = 0.003;
+    constexpr size_t DEFAULT_VIDEO_FRAME_QUEUE_SIZE = 50;
+    constexpr double DEFAULT_VIDEO_FRAME_RATE = 1.0 / 30.0;
+    constexpr int AUDIO_SAMPLE_RATE = 48000;
+    constexpr int AUDIO_CHANNELS = 2;
+    constexpr int BYTES_PER_SAMPLE = 2;
+    constexpr int BYTES_PER_AUDIO_FRAME = AUDIO_CHANNELS * BYTES_PER_SAMPLE;
+    constexpr double EARLY_FRAME_THRESHOLD_SECONDS = 0.003;
+    constexpr double LATE_FRAME_THRESHOLD_SECONDS = 0.500;
 
     bool IsValidTimestamp(double value)
     {
@@ -167,8 +169,7 @@ bool RtspPlayer::InitializeFFmpeg(const std::string& url)
             earliest = std::min(earliest, start);
         }
 
-        m_timestampOrigin =
-            earliest == std::numeric_limits<double>::max() ? 0.0 : earliest;
+        m_timestampOrigin = (earliest == std::numeric_limits<double>::max()) ? 0.0 : earliest;
     }
 
     if (!InitializeVideoDecoder())
@@ -324,8 +325,8 @@ bool RtspPlayer::InitializeAudioOutput()
 
     SDL_AudioSpec spec{};
     spec.format = SDL_AUDIO_S16;
-    spec.channels = AudioChannels;
-    spec.freq = AudioSampleRate;
+    spec.channels = AUDIO_CHANNELS;
+    spec.freq = AUDIO_SAMPLE_RATE;
 
     m_sdlAudioStream.reset(SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr));
 
@@ -338,7 +339,7 @@ bool RtspPlayer::InitializeAudioOutput()
     AVChannelLayout outputLayout = AV_CHANNEL_LAYOUT_STEREO;
     SwrContext* rawSwr = nullptr;
 
-    const int result = swr_alloc_set_opts2(&rawSwr, &outputLayout, AV_SAMPLE_FMT_S16, AudioSampleRate, &m_audioCodecContext->ch_layout,
+    const int result = swr_alloc_set_opts2(&rawSwr, &outputLayout, AV_SAMPLE_FMT_S16, AUDIO_SAMPLE_RATE, &m_audioCodecContext->ch_layout,
         m_audioCodecContext->sample_fmt, m_audioCodecContext->sample_rate, 0, nullptr);
 
     av_channel_layout_uninit(&outputLayout);
@@ -535,12 +536,12 @@ void RtspPlayer::DemuxThread(std::stop_token stopToken)
 
         if (packet->stream_index == m_videoStreamIndex)
         {
-            if (!m_videoPacketQueue.Push(std::move(packet)))
+            if (!m_videoPacketQueue.Push(std::move(packet), stopToken))
                 break;
         }
         else if (packet->stream_index == m_audioStreamIndex)
         {
-            if (!m_audioPacketQueue.Push(std::move(packet)))
+            if (!m_audioPacketQueue.Push(std::move(packet), stopToken))
                 break;
         }
     }
@@ -587,7 +588,7 @@ void RtspPlayer::AudioDecodeThread(std::stop_token stopToken)
     if (!stopToken.stop_requested() && !m_stopping)
     {
         FlushAudioDecoder(stopToken);
-        FlushResampler();
+        FlushResampler(stopToken);
     }
 
     m_audioDone = true;
@@ -633,10 +634,9 @@ bool RtspPlayer::ReceiveVideoFrames(std::stop_token stopToken)
         }
 
         double pts = NormalizeTimestamp(frame->best_effort_timestamp, m_videoAVStream->time_base);
-
         AVRational frameRate = av_guess_frame_rate(m_formatContext.get(), m_videoAVStream, frame.get());
 
-        double frameDuration = 1.0 / 30.0;
+        double frameDuration = DEFAULT_VIDEO_FRAME_RATE;
         if (frameRate.num > 0 && frameRate.den > 0)
             frameDuration = av_q2d(av_inv_q(frameRate));
 
@@ -652,7 +652,7 @@ bool RtspPlayer::ReceiveVideoFrames(std::stop_token stopToken)
 
         ++m_decodedFrameCount;
 
-        if (!m_videoFrameQueue.PushWait(std::move(output), stopToken))
+        if (!m_videoFrameQueue.Push(std::move(output), stopToken))
             return false;
 
         NotifyDataReady();
@@ -662,11 +662,11 @@ bool RtspPlayer::ReceiveVideoFrames(std::stop_token stopToken)
 bool RtspPlayer::FlushVideoDecoder(std::stop_token stopToken)
 {
     int result = avcodec_send_packet(m_videoCodecContext.get(), nullptr);
-
     if (result == AVERROR(EAGAIN))
     {
         if (!ReceiveVideoFrames(stopToken))
             return false;
+
         result = avcodec_send_packet(m_videoCodecContext.get(), nullptr);
     }
 
@@ -682,7 +682,6 @@ bool RtspPlayer::FlushVideoDecoder(std::stop_token stopToken)
 bool RtspPlayer::DecodeAudioPacket(AVPacket* packet, std::stop_token stopToken)
 {
     int result = avcodec_send_packet(m_audioCodecContext.get(), packet);
-
     if (result == AVERROR(EAGAIN))
     {
         if (!ReceiveAudioFrames(stopToken))
@@ -709,7 +708,6 @@ bool RtspPlayer::ReceiveAudioFrames(std::stop_token stopToken)
             return false;
 
         const int result = avcodec_receive_frame(m_audioCodecContext.get(), frame.get());
-
         if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
             return true;
 
@@ -727,7 +725,6 @@ bool RtspPlayer::ReceiveAudioFrames(std::stop_token stopToken)
 bool RtspPlayer::FlushAudioDecoder(std::stop_token stopToken)
 {
     int result = avcodec_send_packet(m_audioCodecContext.get(), nullptr);
-
     if (result == AVERROR(EAGAIN))
     {
         if (!ReceiveAudioFrames(stopToken))
@@ -758,7 +755,7 @@ bool RtspPlayer::ConvertAudioFrame(AVFrame* frame, std::stop_token stopToken)
     const double resamplerDelay = static_cast<double>(swr_get_delay(m_swrContext.get(), frame->sample_rate)) / frame->sample_rate;
 
     AudioBuffer output;
-    output.data.resize(static_cast<std::size_t>(outputCapacity) * BytesPerAudioFrame);
+    output.data.resize(static_cast<std::size_t>(outputCapacity) * BYTES_PER_AUDIO_FRAME);
     std::uint8_t* outputPlanes[] = { output.data.data() };
 
     const AVSampleFormat inputFormat = static_cast<AVSampleFormat>(frame->format);
@@ -779,7 +776,7 @@ bool RtspPlayer::ConvertAudioFrame(AVFrame* frame, std::stop_token stopToken)
     if (converted == 0)
         return true;
 
-    output.data.resize(static_cast<std::size_t>(converted) * BytesPerAudioFrame);
+    output.data.resize(static_cast<std::size_t>(converted) * BYTES_PER_AUDIO_FRAME);
 
     const double inputPts = NormalizeTimestamp(frame->best_effort_timestamp, m_audioAVStream->time_base);
     double pts = IsValidTimestamp(inputPts) ? inputPts - resamplerDelay : (m_audioNextPtsValid ? m_audioNextPts : 0.0);
@@ -791,17 +788,17 @@ bool RtspPlayer::ConvertAudioFrame(AVFrame* frame, std::stop_token stopToken)
     }
 
     output.pts = pts;
-    m_audioNextPts = pts + static_cast<double>(converted) / AudioSampleRate;
+    m_audioNextPts = pts + static_cast<double>(converted) / AUDIO_SAMPLE_RATE;
     m_audioNextPtsValid = true;
 
-    if (!m_audioBufferQueue.PushWait(std::move(output), stopToken))
+    if (!m_audioBufferQueue.Push(std::move(output), stopToken))
         return false;
 
     NotifyDataReady();
     return true;
 }
 
-bool RtspPlayer::FlushResampler()
+bool RtspPlayer::FlushResampler(std::stop_token stopToken)
 {
     if (!m_swrContext)
         return true;
@@ -813,7 +810,7 @@ bool RtspPlayer::FlushResampler()
             break;
 
         AudioBuffer output;
-        output.data.resize(static_cast<std::size_t>(capacity) * BytesPerAudioFrame);
+        output.data.resize(static_cast<std::size_t>(capacity) * BYTES_PER_AUDIO_FRAME);
 
         std::uint8_t* outputPlanes[] = { output.data.data() };
 
@@ -828,13 +825,13 @@ bool RtspPlayer::FlushResampler()
         if (converted == 0)
             break;
 
-        output.data.resize(static_cast<std::size_t>(converted) * BytesPerAudioFrame);
+        output.data.resize(static_cast<std::size_t>(converted) * BYTES_PER_AUDIO_FRAME);
 
         output.pts = m_audioNextPtsValid ? m_audioNextPts : 0.0;
-        m_audioNextPts = output.pts + static_cast<double>(converted) / AudioSampleRate;
+        m_audioNextPts = output.pts + static_cast<double>(converted) / AUDIO_SAMPLE_RATE;
         m_audioNextPtsValid = true;
 
-        if (!m_audioBufferQueue.Push(std::move(output)))
+        if (!m_audioBufferQueue.Push(std::move(output), stopToken))
             return false;
 
         NotifyDataReady();
@@ -888,7 +885,7 @@ void RtspPlayer::SubmitAudio()
 
     while (m_audioBufferQueue.TryPop(buffer))
     {
-        const int sampleFrames = static_cast<int>(buffer.data.size() / BytesPerAudioFrame);
+        const int sampleFrames = static_cast<int>(buffer.data.size() / BYTES_PER_AUDIO_FRAME);
 
         if (sampleFrames <= 0)
             continue;
@@ -927,10 +924,10 @@ double RtspPlayer::GetAudioClock() const
     if (queuedBytes < 0)
         return m_audioClockBasePts;
 
-    const std::int64_t queuedSamples = queuedBytes / BytesPerAudioFrame;
+    const std::int64_t queuedSamples = queuedBytes / BYTES_PER_AUDIO_FRAME;
     const std::int64_t playedSamples = std::clamp<std::int64_t>(m_audioSamplesSubmitted - queuedSamples, 0, m_audioSamplesSubmitted);
 
-    return m_audioClockBasePts + static_cast<double>(playedSamples) / AudioSampleRate;
+    return m_audioClockBasePts + static_cast<double>(playedSamples) / AUDIO_SAMPLE_RATE;
 }
 
 double RtspPlayer::GetVideoClock() const
@@ -960,6 +957,7 @@ void RtspPlayer::ScheduleVideoFrame()
             VideoFrame next;
             if (!m_videoFrameQueue.TryPop(next))
                 return;
+
             m_pendingVideoFrame = std::move(next);
         }
 
@@ -977,11 +975,11 @@ void RtspPlayer::ScheduleVideoFrame()
 
         const double difference = m_pendingVideoFrame->pts - GetMasterClock();
 
-        if (difference > kEarlyFrameThresholdSeconds)
+        if (difference > EARLY_FRAME_THRESHOLD_SECONDS)
         {
             return;
         }
-        else if (difference < -kLateFrameThresholdSeconds)
+        else if (difference < -LATE_FRAME_THRESHOLD_SECONDS)
         {
             m_pendingVideoFrame.reset();
             continue;
@@ -995,7 +993,7 @@ void RtspPlayer::ScheduleVideoFrame()
     }
 }
 
-int RtspPlayer::GetNextVideoWaitTimeout() const
+int RtspPlayer::GetNextVideoWaitTimeoutMs() const
 {
     if (!m_pendingVideoFrame)
         return -1;
@@ -1008,8 +1006,8 @@ int RtspPlayer::GetNextVideoWaitTimeout() const
     if (difference <= 0.0)
         return 0;
 
-    constexpr double kMaximumWaitSeconds = 1.0;
-    const double waitSeconds = std::min(difference, kMaximumWaitSeconds);
+    constexpr double maximumWaitSeconds = 1.0;
+    const double waitSeconds = std::min(difference, maximumWaitSeconds);
 
     return static_cast<int>(std::ceil(waitSeconds * 1000.0));
 }
@@ -1144,21 +1142,20 @@ void RtspPlayer::Play()
         if (!IsPaused() && videoFinished && audioDecodeFinished && queuedAudioBytes <= 0)
             break;
 
-        int timeout = -1;
+        int timeoutMs = -1;
         if (!IsPaused())
         {
-            timeout = GetNextVideoWaitTimeout();
+            timeoutMs = GetNextVideoWaitTimeoutMs();
 
             // Once decoding is finished, let SDL consume its remaining audio.
             // Polling here is only for the final device drain, not normal playback.
-            if (videoFinished && audioDecodeFinished && queuedAudioBytes > 0 && (timeout < 0 || timeout > 20))
+            if (videoFinished && audioDecodeFinished && queuedAudioBytes > 0 && (timeoutMs < 0 || timeoutMs > 20))
             {
-                timeout = 20;
+                timeoutMs = 20;
             }
         }
 
-        const bool gotEvent = (timeout < 0) ? SDL_WaitEvent(&event) : SDL_WaitEventTimeout(&event, timeout);
-
+        const bool gotEvent = (timeoutMs < 0) ? SDL_WaitEvent(&event) : SDL_WaitEventTimeout(&event, timeoutMs);
         if (!gotEvent)
             continue;
 
@@ -1192,7 +1189,7 @@ size_t RtspPlayer::GetMaxVideoFrameQueueSize() const
     AVRational frameRate = av_guess_frame_rate(m_formatContext.get(), m_videoAVStream, nullptr);
 
     if (frameRate.num <= 0 || frameRate.den <= 0)
-        return 50;
+        return DEFAULT_VIDEO_FRAME_QUEUE_SIZE;
 
     const double fps = av_q2d(frameRate);
     const double bufferSeconds = std::chrono::duration<double>(m_config.videoBufferDurationMs).count();

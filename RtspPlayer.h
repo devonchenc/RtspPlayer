@@ -147,13 +147,13 @@ private:
     struct VideoFrame
     {
         FramePtr frame;
-        double pts = 0.0; // normalized seconds
+        double pts{ 0.0 }; // normalized seconds
     };
 
     struct AudioBuffer
     {
         std::vector<std::uint8_t> data;
-        double pts = 0.0; // normalized seconds
+        double pts{ 0.0 }; // normalized seconds
     };
 
     bool InitializeFFmpeg(const std::string& url);
@@ -179,7 +179,7 @@ private:
 
     bool ConvertAudioFrame(AVFrame* frame, std::stop_token stopToken);
     void ResetAudioClock();
-    bool FlushResampler();
+    bool FlushResampler(std::stop_token stopToken);
 
     void NotifyDataReady();
     void HandleDataReady();
@@ -191,7 +191,7 @@ private:
     double GetAudioClock() const;
     double GetVideoClock() const;
     double GetMasterClock() const;
-    int GetNextVideoWaitTimeout() const;
+    int GetNextVideoWaitTimeoutMs() const;
 
     static int InterruptCallback(void* opaque);
     static void LogFFmpegError(const char* operation, int error);
@@ -225,10 +225,10 @@ private:
     std::atomic<bool> m_dataReadyEventPending{ false };
 
     // Queues
-    BlockingQueue<PacketPtr> m_videoPacketQueue{ 128 };
-    BlockingQueue<PacketPtr> m_audioPacketQueue{ 128 };
-    BlockingQueue<VideoFrame> m_videoFrameQueue{ 30 };
-    BlockingQueue<AudioBuffer> m_audioBufferQueue{ 10 };
+    CBlockingQueue<PacketPtr> m_videoPacketQueue{ 128 };
+    CBlockingQueue<PacketPtr> m_audioPacketQueue{ 128 };
+    CBlockingQueue<VideoFrame> m_videoFrameQueue{ 30 };
+    CBlockingQueue<AudioBuffer> m_audioBufferQueue{ 10 };
 
     // Worker threads
     std::jthread m_demuxThread;

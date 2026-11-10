@@ -2,36 +2,35 @@
 
 #include <condition_variable>
 #include <deque>
-#include <iostream>
 #include <mutex>
 #include <stop_token>
 
 template<class T>
-class BlockingQueue
+class CBlockingQueue
 {
 public:
-    explicit BlockingQueue(std::size_t capacity)
-        : m_capacity(capacity == 0 ? 1 : capacity)
+    explicit CBlockingQueue(std::size_t capacity)
+        : m_capacity(capacity)
     {
     }
 
-    bool Push(T item)
+    CBlockingQueue(const CBlockingQueue&) = delete;
+    CBlockingQueue& operator=(const CBlockingQueue&) = delete;
+    CBlockingQueue(CBlockingQueue&&) = delete;
+    CBlockingQueue& operator=(CBlockingQueue&&) = delete;
+
+public:
+    void SetCapacity(size_t capacity)
     {
         {
-            std::unique_lock lock(m_mutex);
-            m_notFull.wait(lock, [this] { return m_closed || m_queue.size() < m_capacity; });
-
-            if (m_closed)
-                return false;
-
-            m_queue.push_back(std::move(item));
+            std::lock_guard lock(m_mutex);
+            m_capacity = capacity;
         }
 
-        m_notEmpty.notify_one();
-        return true;
+        m_notFull.notify_all();
     }
 
-    bool PushWait(T item, std::stop_token stopToken)
+    bool Push(T&& item, std::stop_token stopToken)
     {
         {
             std::unique_lock lock(m_mutex);
@@ -54,28 +53,7 @@ public:
         return true;
     }
 
-    bool PushDropOldest(T item)
-    {
-        {
-            std::lock_guard lock(m_mutex);
-
-            if (m_closed)
-                return false;
-
-            if (m_queue.size() >= m_capacity)
-            {
-                m_queue.pop_front();
-            }
-
-            m_queue.push_back(std::move(item));
-        }
-
-        m_notEmpty.notify_one();
-
-        return true;
-    }
-
-    bool Pop(T& item, std::stop_token stopToken = {})
+    bool Pop(T& item, std::stop_token stopToken)
     {
         {
             std::unique_lock lock(m_mutex);
@@ -131,16 +109,6 @@ public:
     {
         std::lock_guard lock(m_mutex);
         return m_queue.size();
-    }
-
-    void SetCapacity(size_t capacity)
-    {
-        {
-            std::lock_guard lock(m_mutex);
-            m_capacity = capacity;
-        }
-
-        m_notFull.notify_all();
     }
 
     void Clear()
